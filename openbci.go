@@ -18,16 +18,21 @@
 package openbci
 
 import (
-	"github.com/tarm/serial"
+	"crypto/rand"
 	"io"
 	"log"
 	"time"
+
+	"github.com/tarm/serial"
 )
 
-var Command map[string][]byte = map[string][]byte{
-	"stop":  []byte{'\x73'},
-	"start": []byte{'\x62'},
-	"reset": []byte{'\x76'},
+var Command map[string]byte = map[string]byte{
+	"stop":   '\x73',
+	"start":  '\x62',
+	"reset":  '\x76',
+	"footer": '\xc0',
+	"header": '\xa0',
+	"init":   '\x24',
 }
 
 func NewDevice(location string, baud int, readTimeout time.Duration) (io.ReadWriteCloser, error) {
@@ -63,7 +68,7 @@ func (d *Device) Read(buf []byte) (int, error) {
 
 func isReset(buf []byte) bool {
 	for _, val := range buf {
-		if val == Command["reset"][0] {
+		if val == Command["reset"] {
 			return true
 		}
 	}
@@ -94,21 +99,21 @@ func (d *Device) reset(buf []byte) (n int, err error) {
 		scrolling       [3]byte
 	)
 	buf = make([]byte, 1)
-	n0, err = d.Write(Command["stop"])
+	n0, err = d.Write([]byte{Command["stop"]})
 	if err != nil {
 		return 0, err
 	}
 	n += n0
 	time.Sleep(10 * time.Millisecond)
 	log.Printf("Writing %v to device", Command["reset"])
-	n1, err = d.w.Write(Command["reset"])
+	n1, err = d.Write([]byte{Command["reset"]})
 	if err != nil {
 		return n, err
 	}
 	n += n1
 	time.Sleep(10 * time.Millisecond)
 
-	init_array = [3]byte{'\x24', '\x24', '\x24'}
+	init_array = [3]byte{Command["init"], Command["init"], Command["init"]}
 
 	for {
 		_, err := d.Read(buf)
@@ -120,7 +125,7 @@ func (d *Device) reset(buf []byte) (n int, err error) {
 		scrolling[idx%3] = buf[0]
 		idx++
 		if scrolling == init_array {
-			n2, err = d.Write(Command["start"])
+			n2, err = d.Write([]byte{Command["start"]})
 			if err != nil {
 				return n, err
 			}
@@ -135,5 +140,73 @@ func (d *Device) Close() error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func NewMockDevice() *MockDevice { return &MockDevice{on: false} }
+
+type MockDevice struct {
+	on          bool
+	seqcounter  uint8
+	datacounter uint8
+	readstate   uint8
+}
+
+func (md *MockDevice) Read(p []byte) (n int, err error) {
+	var b int
+	if md.on {
+		for idx := range p {
+			switch md.readstate {
+			case 0:
+				p[idx] = Command["footer"]
+				md.readstate++
+				b++
+			case 1:
+				p[idx] = Command["header"]
+				md.readstate++
+				b++
+			case 2:
+				p[idx] = md.seqcounter
+				md.readstate++
+				b++
+			case 3:
+				buf := make([]byte, 1)
+				rand.Read(buf)
+				p[idx] = buf[0]
+				b++
+				md.datacounter++
+				if md.datacounter == 30 {
+					md.readstate++
+					md.datacounter = 0
+				}
+			case 4:
+				p[idx] = Command["footer"]
+				md.readstate = 1
+				md.seqcounter++
+				b++
+				time.Sleep(time.Millisecond * 25)
+			}
+
+		}
+	}
+	return b, nil
+}
+
+func (md *MockDevice) Write(p []byte) (n int, err error) {
+	switch len(p) {
+	case 0:
+		return 0, nil
+	default:
+		switch p[0] {
+		case Command["start"]:
+			md.on = true
+		case Command["stop"]:
+			md.on = false
+		}
+	}
+	return len(p), nil
+}
+
+func (md *MockDevice) Close() (err error) {
 	return nil
 }
