@@ -188,6 +188,8 @@ func (md *MockDevice) Read(p []byte) (n int, err error) {
 			}
 
 		}
+	} else {
+		time.Sleep(time.Second)
 	}
 	return b, nil
 }
